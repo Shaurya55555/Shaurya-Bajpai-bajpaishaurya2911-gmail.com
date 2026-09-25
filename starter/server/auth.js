@@ -71,12 +71,49 @@ export function issueAccessToken({ userId, orgId, role, permVersion }, secret) {
 // `node scripts/check-jwt.js` is the public test suite for this function.
 // ---------------------------------------------------------------------------
 export function verifyAccessToken(token, secret) {
-  // YOURS TO WRITE. Every failure mode listed above must be a 401 UNAUTHENTICATED.
-  // `node scripts/check-jwt.js` is the public suite for this function.
-  throw Object.assign(
-    new Error('TODO: server/auth.js — verifyAccessToken() is yours to write (AUTH-DATA-MODEL.md §10).'),
-    { code: 'NOT_IMPLEMENTED' }
-  );
+  if (typeof token !== 'string' || token.length === 0) throw unauthenticated();
+
+  const parts = token.split('.');
+  if (parts.length !== 3) throw unauthenticated();
+  const [h, p, s] = parts;
+
+  const isPlainObject = (v) => typeof v === 'object' && v !== null && !Array.isArray(v);
+
+  let header, payload;
+  try {
+    header = JSON.parse(unb64(h).toString('utf8'));
+  } catch {
+    throw unauthenticated();
+  }
+  try {
+    payload = JSON.parse(unb64(p).toString('utf8'));
+  } catch {
+    throw unauthenticated();
+  }
+  if (!isPlainObject(header) || !isPlainObject(payload)) throw unauthenticated();
+
+  // Do NOT trust the header to pick a verification algorithm. Always verify with
+  // HS256, and separately require the header claims to say the same thing.
+  if (header.alg !== ALG || header.typ !== 'JWT') throw unauthenticated();
+
+  let sig;
+  try {
+    sig = unb64(s);
+  } catch {
+    throw unauthenticated();
+  }
+  const expected = createHmac('sha256', secret).update(`${h}.${p}`).digest();
+  if (sig.length !== expected.length || !timingSafeEqual(sig, expected)) {
+    throw unauthenticated();
+  }
+
+  const now = Math.floor(Date.now() / 1000);
+  if (typeof payload.exp !== 'number' || payload.exp <= now) throw unauthenticated();
+  if (payload.iss !== ISS) throw unauthenticated();
+  if (payload.aud !== AUD) throw unauthenticated();
+  if (typeof payload.jti !== 'string' || payload.jti.length === 0) throw unauthenticated();
+
+  return payload;
 }
 
 

@@ -11,33 +11,59 @@ gives nothing away.
 
 ---
 
-<!-- EXAMPLE — delete this block, keep the shape.
+## 2026-09-26 · Phase 0 — orientation
 
-## 2026-03-04 · Phase 0 — orientation
+Expected `npm install` to be a no-op. Observed: `better-sqlite3@11.10.0` tried to compile
+from source and failed — no Visual Studio toolchain on this machine, and no prebuilt
+binary published for this Node version (v26.7.0) at that package version. Changed: bumped
+`better-sqlite3` to `^13.0.3` in `package.json`, which ships a prebuild matching this
+Node ABI; `npm install` then succeeded with zero compilation. Verified by loading the
+module standalone (`new Database(':memory:')`, `PRAGMA quick_check`) before touching any
+app code. Note: this is a devDependency version, not `db/schema.sql` — the "don't edit
+the schema" rule doesn't apply, but I still treated it as a decision worth a paper trail
+rather than a silent fix.
 
-Expected the unknown-permission test to fail on my validation code.
-Observed: it passed, with foreign_keys ON, and *also* passed with the pragma removed — so the
-check was never running, and the "pass" was the schema loading fine while enforcing nothing.
-Changed: moved `foreign_keys = ON` to connection open and re-ran; now it raises
-`FOREIGN KEY constraint failed` as the README said it would.
-Note: this is the failure mode where a passing test is worse than a failing one.
+## 2026-09-26 · Phase 1 — token verification
 
--->
+Expected the algorithm-confusion cases (`alg: none`, HS512/RS256 substitution) to be the
+hard part. Observed: they weren't — checking `header.alg !== 'HS256'` after parsing but
+before ever branching on it kills all of them in one line, because verification always
+runs HMAC-SHA256 regardless of what the header claims. The genuinely fiddly case was
+`base64url` decoding of a garbage signature string (`!!!not-base64!!!`) — Node's
+`Buffer.from(str, 'base64url')` doesn't throw on invalid characters, it silently
+truncates/reinterprets them, so I couldn't rely on a decode exception and instead added
+an explicit length check against the expected HMAC digest length before
+`timingSafeEqual` (which itself throws on mismatched buffer lengths). `node
+scripts/check-jwt.js`: 43/43 on first run once that length check was in.
 
-## Phase 0 — orientation
+## 2026-09-26 · Phase 2 — caller context and the resolution engine
 
-_Installed, reset the database, read the documents, ran the suites against the untouched skeleton.
-What did the starting line actually look like, and which failure surprised you?_
+Started with the model "a suspended or removed membership should be rejected in
+`context.js`, at authentication time, before it ever reaches permission resolution." That
+broke against `AUTH-DATA-MODEL.md` §10 directly stating a suspended membership gets
+`403` with an *empty permission set*, not `401` — meaning the caller must still be
+successfully authenticated and handed to the routes, and the emptiness has to come from
+`permissions.js`, not from a rejection in `context.js`. Moved the suspended case out of
+`context.js` entirely; only `status === 'removed'` is rejected there (`401`), since a
+removed membership means "not a member" outright, while suspended means "a member with
+nothing." Confirmed by `check-permissions.js`'s suspended-membership block: `effect:
+'deny'` with `reason: 'suspended'` for every permission, no 401 anywhere in that test.
 
-## Phase 1 — token verification
+Also had to decide what "resolved the same way" means for the org-level (`deviceId:
+null`) vs device-level query, since the spec states the intent but not the mechanism.
+Argued in `DECISIONS.md` under "the org-level view relaxes the device filter rather than
+unioning per device."
 
-_What did you expect each failure mode to look like before you ran it? Which one behaved
-differently from your expectation, and what did that tell you?_
+`check-permissions.js`: 35/35. `check-personalisation.js`: 18/18 against fingerprint
+`bb339819425c` (undocumented role `reviewer`, undocumented permission `device:reboot`) —
+confirms the engine reads `roles`/`permissions`/`role_permissions`/`permission_patterns`
+from the tables rather than assuming the documented 5-role/19-permission matrix.
 
-## Phase 2 — caller context and the resolution engine
-
-_This is where most people's first model is wrong. Write down the model you started with, the
-observation that broke it, and the model you moved to. Be specific about the observation._
+One thing I checked and did *not* have to fix: `.candidate-nonce` is committed in this
+repo with a fixed value, which I briefly suspected meant every fork shares an identical
+"personalized" fixture. `scripts/personalise.js`'s own header comment says this is
+deliberate — "the committed nonce is one instance, grading runs with a different one" —
+so no action was needed, just a wasted five minutes confirming it.
 
 ## Phase 3 — orgs, members, invites
 
