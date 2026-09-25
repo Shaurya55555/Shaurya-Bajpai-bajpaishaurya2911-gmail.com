@@ -237,20 +237,41 @@ choosing a test target. Retried against `dev_kiosk_lobby_01` (no seeded session)
 was exactly one `201` and one `409`, as D10 requires. The partial unique index does what
 it's for.
 
+## 2026-09-26 · Phase 6 (cont.) — closing the API gaps `check-api.js` never exercises
+
+Three endpoints `check-api.js` never calls at all: `POST /auth/refresh`,
+`DELETE /orgs/:org/members/:userId` (full removal, distinct from the `/suspend` variant
+it does test), and `DELETE /sessions/:id` (stop). Verified each directly against a
+running instance rather than leaving them as "should work by inspection":
+
+- **`/auth/refresh`**: logged in as Dana to get the httpOnly cookie, called `/auth/refresh`
+  with it — `200`, correct role, the new access token works against `/auth/me`.
+  Replayed the *same*, now-rotated cookie a second time: `401 UNAUTHENTICATED`, proving
+  the reuse-detection/family-revocation path actually fires, not just that it compiles.
+- **Member removal**: Dana (owner) removes `usr_acme_viewer` — `200`,
+  `{status: 'removed'}`. The removed user's own subsequent login attempt fails, confirming
+  `status='removed'` actually blocks access rather than just being a cosmetic flag.
+- **Session stop, three shapes**: self-stop → `200`, `end_reason: user_stopped`. Owner
+  (holds `session:terminate`) stopping *someone else's* session → `200`,
+  `end_reason: admin_terminated`. Sam (operator, no `session:terminate`, not the session
+  owner) attempting to stop *Dana's* session → `403 FORBIDDEN`, confirming the "your own
+  session OR `session:terminate`" rule is enforced both ways, not just the permissive
+  side.
+
+No bugs found in any of the three — but "no bugs found" is only worth something because
+each was actually exercised, not assumed from the code reading alone.
+
 ## Open threads
 
 _Things you know are wrong, unfinished, or that you would do differently with another day. Listing
 these honestly is worth more than pretending they do not exist — we will find them anyway._
 
-- **`POST /auth/refresh`'s default-org selection is untested by any shipped suite.** I
-  reused the same "earliest `joined_at`" rule login uses, since the docs never show a
-  refresh request body. `check-api.js` never exercises `/auth/refresh` at all — this is a
-  real gap in my own verification, not just in the shipped tests.
-- **`PeopleView` and `SessionsView`'s interactive flows (role-select, suspend/reinstate,
-  remove, new-session, stop-session) are written against `UI-INVENTORY.md`'s element
-  table by inspection, not driven by any test I've run.** `tests/ui.spec.js` only checks
-  nav-card visibility and the grants flow in depth; the People and Sessions UI code paths
-  have never actually been clicked through, by me or by a test.
+- ~~`POST /auth/refresh`'s default-org selection is untested by any shipped suite~~ —
+  closed below (Phase 6, "closing the API gaps `check-api.js` never exercises").
+- ~~`PeopleView` and `SessionsView`'s server-side flows (remove, stop-session) were never
+  exercised by any test.~~ The API endpoints behind them are now verified directly
+  (below); the React click-paths themselves are still untested by Playwright — that part
+  of this thread stays open.
 - ~~The exclusive-session race (D10) has only been proven via sequential requests~~ —
   closed, see the Phase 6 concurrency entry below.
 - **The org-level vs. device-level resolution judgment call** (argued in `DECISIONS.md`)
