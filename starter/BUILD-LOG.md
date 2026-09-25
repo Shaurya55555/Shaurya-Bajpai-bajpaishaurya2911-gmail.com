@@ -195,7 +195,73 @@ expected `403`, then read the audit log back as Dana and found a fresh row —
 with a real `request_id` matching that exact call. That's the evidence; the four suites
 passing again is necessary but was never going to be sufficient on its own for this one.
 
+## 2026-09-26 · Phase 7 — speed check, and a route-list cross-check
+
+Counted rather than guessed. `grep`'d every `router.(get|post|patch|delete)` registration
+across `server/routes/*.js` against `BRIEF.md` §5.1's endpoint table by hand: 33
+registered routes, 33 rows in the table, all present. (This is the kind of thing easy to
+half-do — implement the routes a test suite happens to exercise and quietly skip the
+ones it doesn't, like `GET /orgs/:org/users/:userId/effective` or `DELETE
+/orgs/:org/invites/:id`, neither of which `check-api.js` calls directly.)
+
+Timed three requests against a running instance (seed fixture, Acme's 5 devices) rather
+than trusting the batched-query design was fast just because it's O(1)-queries-per-list
+by construction:
+
+| Request | Time |
+|---|---|
+| `GET /orgs/org_acme/devices` (5 devices, full resolved permission set per row) | 30ms |
+| `GET /auth/me` | 22ms |
+| `POST /auth/token` (org switch) | 26ms |
+
+All comfortably inside the "well within a second" bar `BRIEF.md` §6 sets, at a margin
+wide enough that I'm not worried about it at seed-fixture scale. I did not test at a
+larger device/member count than the fixture provides — the batching argument
+(`resolveDevices` issues 3 queries regardless of device count, not one query per row) is
+structural, not something I've separately load-tested past the ~5-9 devices the fixture
+seeds.
+
+## 2026-09-26 · Phase 6 (cont.) — proving the exclusivity race under real concurrency
+
+`check-api.js`'s `DEVICE_BUSY` test fires two `POST /sessions` calls sequentially
+(`await`ed one after the other), which proves the *check* works but not the *race* — a
+naive check-then-insert would also pass a sequential test, since there's no window for
+two requests to interleave. Fired two genuinely concurrent requests instead
+(`Promise.all`, no `await` between them) against a running instance.
+
+First attempt picked the wrong device — `dev_build_server_01` already carries an active
+seeded session (`ses_live_build_server`, `usr_sam`, mode `control`), so both new
+`terminal` requests got `409` regardless of any race, which told me nothing about
+concurrency handling and everything about not checking the fixture state before
+choosing a test target. Retried against `dev_kiosk_lobby_01` (no seeded session): result
+was exactly one `201` and one `409`, as D10 requires. The partial unique index does what
+it's for.
+
 ## Open threads
 
 _Things you know are wrong, unfinished, or that you would do differently with another day. Listing
 these honestly is worth more than pretending they do not exist — we will find them anyway._
+
+- **`POST /auth/refresh`'s default-org selection is untested by any shipped suite.** I
+  reused the same "earliest `joined_at`" rule login uses, since the docs never show a
+  refresh request body. `check-api.js` never exercises `/auth/refresh` at all — this is a
+  real gap in my own verification, not just in the shipped tests.
+- **`PeopleView` and `SessionsView`'s interactive flows (role-select, suspend/reinstate,
+  remove, new-session, stop-session) are written against `UI-INVENTORY.md`'s element
+  table by inspection, not driven by any test I've run.** `tests/ui.spec.js` only checks
+  nav-card visibility and the grants flow in depth; the People and Sessions UI code paths
+  have never actually been clicked through, by me or by a test.
+- ~~The exclusive-session race (D10) has only been proven via sequential requests~~ —
+  closed, see the Phase 6 concurrency entry below.
+- **The org-level vs. device-level resolution judgment call** (argued in `DECISIONS.md`)
+  and **the invite role-assignment rank question** (also in `DECISIONS.md`) are both
+  reasoned positions, not verified ones — I'd want to see the actual hidden-tier behavior
+  before calling either settled.
+- **Performance was measured only at seed-fixture scale** (5-9 devices, ~8 users) — see
+  the Phase 7 entry above. I have not created a larger synthetic org to confirm the
+  batched-query design holds up as counts grow, only argued that it should structurally.
+- **The repo itself still contains organizer-only material** (`q1-starter/`, `tools/`,
+  `DISCOVERY-RUBRIC.md`, `HARDENING.md`) that leaked through the public fork target. This
+  has been flagged to the organizers by email; nothing has been removed pending their
+  reply, per an explicit decision to wait for their guidance rather than unilaterally
+  restructure the submission.
