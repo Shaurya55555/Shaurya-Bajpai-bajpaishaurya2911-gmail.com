@@ -129,6 +129,44 @@ just a path-handling bug in the loader script, which is tooling, not the exercis
 
 `check-api.js`: 66/66 after both fixes.
 
+## 2026-09-26 · Phase 5 — the console
+
+Built `web/` against `tests/ui.spec.js` directly rather than guessing at `UI-INVENTORY.md`
+in isolation — the spec file is the actual grading contract for the shipped suite, and it
+pins several things the prose leaves ambiguous (e.g. that switching orgs must produce a
+*measurably different* `getComputedStyle` background colour, not just a different
+`data-org-theme` attribute).
+
+One design choice worth stating plainly: the "new grant" form's permission checkboxes are
+generated from `Object.keys(session.permissions)` — the org-level permission map already
+returned by `/auth/me` — rather than a hardcoded list of the 19 documented permissions.
+Since `resolve()` iterates the full `permissions` table, this list already includes
+whatever a personalized org's extra permission is, with no separate endpoint and no
+client-side copy of the catalogue. Same principle as the server side, just showing up in
+the UI layer this time.
+
+Predicted the hardest test would be "an element vanishes when the server withdraws the
+permission" (the one that intercepts the API response and checks the client re-renders
+from it). It passed on the first run — because the active view is conditionally rendered
+(`{activeTab === 'devices' && <DevicesView/>}`) rather than hidden with CSS, switching nav
+tabs away and back is a genuine unmount/remount, which forces a real refetch. No special
+handling was needed; the architecture that avoids a client-side permission table also
+happens to make this test trivial.
+
+Have not yet run `npx playwright test` end to end — see next entry once it finishes.
+
+## 2026-09-26 · Phase 5 (cont.) — the same Windows path bug, in a *given* file this time
+
+First `npx playwright test` run: all 25 tests failed, and not on an assertion — `getByTestId('login-email')` couldn't even be found, meaning the page never rendered anything. That's a loading failure, not a logic bug, so I checked the network layer directly instead of the React code: started `server/index.js` by hand in production mode and `curl`'d `/` and the built JS asset. Both came back `404 NOT_FOUND` from the app's own router, not a connection failure — so the server was up, but treating every static path as missing.
+
+`server/index.js`'s `DIST` constant is built the exact same way as the `here()` helper I'd already fixed in `scripts/load-db.js`: `new URL('../dist/', import.meta.url).pathname`. Same bug, same cause — `.pathname` on Windows yields `/D:/Projects/...` (leading slash before the drive letter), and `path.join(DIST, rel)` built from that never resolves to a real file, so `stat()` throws, the SPA-fallback branch reads the same broken path and also fails, and everything 404s. This is in a file `BRIEF.md` §2 lists as *given* ("server/index.js — the request pipeline, and static/Vite serving"), not something the exercise asks me to write — but it doesn't run at all on this machine without the fix, so I patched it the same way: `fileURLToPath(new URL(...))` instead of `.pathname`.
+
+Worth flagging on its own: this is the *second* instance of the identical bug pattern in given tooling (the first was `load-db.js`'s loader). Both share the same root cause and the same fix. If I hadn't already diagnosed the first one, this second failure — "the whole UI is dark, no error, nothing renders" — would have been a much harder one to trace back to a URL-to-path conversion two directories away from anything I'd written. Recognizing the pattern from the first incident is what made this a five-minute fix instead of a debugging session.
+
+Verified with a manual `curl` against a hand-started server (on a scratch port, to rule out my curl commands ever hitting an earlier stale server process rather than the fixed code) before touching Playwright again. `npx playwright test`: 25/25 on the next run.
+
+All four suites are now green: `check-jwt.js` 43/43, `check-permissions.js` 35/35, `check-api.js` 66/66, `check-personalisation.js` 18/18, `npx playwright test` 25/25 — 187/187 total.
+
 ## Open threads
 
 _Things you know are wrong, unfinished, or that you would do differently with another day. Listing
