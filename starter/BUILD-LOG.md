@@ -261,6 +261,32 @@ running instance rather than leaving them as "should work by inspection":
 No bugs found in any of the three — but "no bugs found" is only worth something because
 each was actually exercised, not assumed from the code reading alone.
 
+## 2026-09-26 · Phase 7 (cont.) — actually clicking through People and Sessions
+
+The last honest gap from the last entry: `PeopleView` and `SessionsView` had never been
+driven by anything, test or human — only written against `UI-INVENTORY.md` by
+inspection. Wrote a throwaway Playwright script (not committed — `tests/ui.spec.js` is
+the real suite; this was a one-off manual check) against a fresh instance and drove it
+by hand:
+
+- **People**: sent an invite through the UI form (no crash, form clears); toggled a
+  member's role via `role-select`; clicked `suspend-user` on the viewer — button label
+  flipped to "Reinstate" — clicked it again, member returned to normal with `Suspend`/
+  `Remove` visible again; clicked `remove-user` on a different member — row count went
+  5 → 4, confirming the click actually reaches `DELETE /orgs/:org/members/:userId` and
+  the view refetches afterward.
+- **Sessions**: `new-session` (prompts for device id, then mode) took a session row count
+  from 2 → 3; `stop-session` on the newly active row took the active count from 2 → 1.
+
+First run of the sessions check crashed with `dialog.accept: Cannot accept dialog which
+is already handled!` — a bug in my *test script* (two separate dialog handlers both
+tried to answer the same prompt), not in the app. Fixed by using one handler that
+branches on the dialog's message text instead of stacking a `once` and an `on` handler
+that raced each other.
+
+Both previously-open UI threads are now closed with real evidence, not just "should work
+by inspection."
+
 ## Open threads
 
 _Things you know are wrong, unfinished, or that you would do differently with another day. Listing
@@ -268,10 +294,10 @@ these honestly is worth more than pretending they do not exist — we will find 
 
 - ~~`POST /auth/refresh`'s default-org selection is untested by any shipped suite~~ —
   closed below (Phase 6, "closing the API gaps `check-api.js` never exercises").
-- ~~`PeopleView` and `SessionsView`'s server-side flows (remove, stop-session) were never
-  exercised by any test.~~ The API endpoints behind them are now verified directly
-  (below); the React click-paths themselves are still untested by Playwright — that part
-  of this thread stays open.
+- ~~`PeopleView` and `SessionsView`'s flows were never exercised by any test, server or
+  UI~~ — closed below (Phase 7, "actually clicking through People and Sessions"). Not
+  added to `tests/ui.spec.js` itself since that file is the graded contract, not a
+  scratchpad — the manual script that drove this wasn't committed.
 - ~~The exclusive-session race (D10) has only been proven via sequential requests~~ —
   closed, see the Phase 6 concurrency entry below.
 - **The org-level vs. device-level resolution judgment call** (argued in `DECISIONS.md`)
