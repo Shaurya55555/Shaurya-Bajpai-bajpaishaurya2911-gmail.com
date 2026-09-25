@@ -167,6 +167,34 @@ Verified with a manual `curl` against a hand-started server (on a scratch port, 
 
 All four suites are now green: `check-jwt.js` 43/43, `check-permissions.js` 35/35, `check-api.js` 66/66, `check-personalisation.js` 18/18, `npx playwright test` 25/25 — 187/187 total.
 
+## 2026-09-26 · Phase 6 — hardening: audit was silently success-only
+
+Went through `PERMISSIONS.md` §9's "things that should always be true" list against the
+actual code rather than against the passing test output, on the theory that a shipped
+test proves its own assertion and nothing more. Invariant 9 — "audit is append-only, and
+it records denied attempts as well as successful ones" — is exactly the kind of thing a
+weak test can appear to cover without actually exercising: `check-api.js`'s "contains
+denials" check only asserts that *some* deny row exists in the response, and the seeded
+fixture (`seed/orgs.json`'s `aud_003`) already ships with one. Grepped my own routes:
+`audit(db, ...)` is called 20 times across `server/routes/*.js`, and every single call
+site passes `result: 'allow'`. `auditDenials()` in `audit.js` is exported and never
+imported anywhere. Every `assertCan`/`assertMayGrant`/`assertCanStartSession` refusal —
+which is to say every 403 this API has ever returned to a real caller — was going
+completely unrecorded.
+
+Fixed by moving the audit-on-deny call into the three `assert*` functions in
+`permissions.js` themselves, rather than adding `audit()` calls to ~30 route handlers
+individually. Same reasoning as putting `resolve()` in one place: a behaviour that has to
+happen on every refusal is safer as one line inside the function that already produces
+every refusal than as thirty call sites that each have to remember it. Verified with a
+live request, not just by re-running the suites (which still pass unchanged — they were
+never asserting the right thing here): started the server against a throwaway DB, logged
+in as Sam (operator, no `audit:read` in Acme), hit `GET /orgs/org_acme/audit`, got the
+expected `403`, then read the audit log back as Dana and found a fresh row —
+`actor_id: usr_sam, action: audit.read, result: deny, reason_code: missing_permission`,
+with a real `request_id` matching that exact call. That's the evidence; the four suites
+passing again is necessary but was never going to be sufficient on its own for this one.
+
 ## Open threads
 
 _Things you know are wrong, unfinished, or that you would do differently with another day. Listing

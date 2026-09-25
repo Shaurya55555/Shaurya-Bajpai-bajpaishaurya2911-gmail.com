@@ -11,6 +11,37 @@ Rules, from `DISCOVERY-BRIEF.md`:
 
 ---
 
+### Deny-audit logging lives inside the three `assert*` functions, not in the routes
+
+**What I chose:** `assertCan`, `assertMayGrant`, and `assertCanStartSession` in
+`permissions.js` each write a `result: 'deny'` audit row themselves at the point they
+throw the `403`, rather than having every route handler call `audit()` on its own catch
+path.
+
+**Why:** I found, by grepping my own code during hardening rather than from a failing
+test, that all 20 `audit(db, ...)` calls across `server/routes/*.js` passed
+`result: 'allow'` — no route was auditing its own refusals, and `check-api.js`'s "contains
+denials" assertion only passed because `seed/orgs.json` ships a pre-existing deny row
+(`aud_003`), not because any live request during the test run produced one. Verified the
+fix with a real request afterward (logged in `BUILD-LOG.md`, Phase 6): Sam gets a `403`
+on `/orgs/org_acme/audit`, and a fresh `result: deny, action: audit.read, actor_id:
+usr_sam` row appears in the log immediately after, with a matching `request_id`.
+
+**What I rejected:** adding an `audit()` call at each of the ~30 route call sites that
+call `assertCan`/etc. I didn't, because that's the same shape of mistake I'd just found —
+a behaviour every refusal needs, spread across enough call sites that missing one in a
+route I write later is the likely outcome, not an edge case. Centralizing it inside the
+three functions that already produce every refusal means there is no route-level call
+site to forget.
+
+**What would change my mind:** if a hidden test asserted a *specific* `targetType`/
+`targetId` shape for denial rows that my generic `permission.replace(':','.')` action
+naming doesn't produce for a given resource (e.g. expecting `targetType: 'org'` for an
+`org:update` refusal, which I currently leave `null` since there's no device to point at).
+I don't have evidence either way yet.
+
+---
+
 ### Owner-on-owner is an exception to the equal-rank-is-403 rule
 
 **What I chose:** `assertCanModify` allows a caller who is `owner` to modify a target who
@@ -103,6 +134,34 @@ carries `reason: 'suspended'` through to the response.
 **What would change my mind:** if a hidden test expected suspended callers to get `401`
 instead of `403` on a permission-gated route. I haven't seen that, and it would
 contradict `AUTH-DATA-MODEL.md` §10 as written.
+
+---
+
+### Inviting a role is restricted only for `owner`, not by full rank comparison
+
+**What I chose:** `POST /orgs/:org/invites` blocks inviting someone as `owner` unless the
+caller is themselves an `owner`, and allows any other role for anyone holding
+`user:invite` — it does not additionally require the invited role's rank to be strictly
+below the caller's rank (the way `assertCanModify` gates changing an *existing* member's
+role).
+
+**Why:** `AUTH-DATA-MODEL.md` §6 states one concrete rule for invites: "the invited role
+must be one the inviter could assign themselves," immediately followed by "only an owner
+may confer `owner`." That second sentence is the only worked example given, and it's
+also the only rank-sensitive rule stated anywhere for invites specifically (as opposed to
+`PERMISSIONS.md` §6, which is explicitly about modifying an *existing* member). I
+implemented the one rule stated with a concrete example, not a generalization I inferred
+from it.
+
+**What I rejected:** mirroring `assertCanModify`'s full rank check for invites too (an
+admin could only invite operator/auditor/viewer, not another admin). I didn't, because
+that would block a plausible legitimate case — an admin inviting a new admin to help run
+the org — that no document states is disallowed, on the strength of a sentence that has
+exactly one concrete instance given.
+
+**What would change my mind:** a hidden test expecting `403` when an admin invites
+another admin. I have no evidence either way; this is a genuine open reading, not a
+verified one.
 
 ---
 

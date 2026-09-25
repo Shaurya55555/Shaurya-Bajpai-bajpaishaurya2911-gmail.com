@@ -13,6 +13,25 @@
 // from the tables; nothing is hardcoded.
 
 import { forbidden } from './http.js';
+import { audit } from './audit.js';
+
+// Every refusal that reaches a caller is recorded here too — PERMISSIONS.md invariant 9
+// ("records denied attempts as well as successful ones"). This is the one place all
+// three assert* functions throw a 403 from, so it is also the one place that needs to
+// remember to log the denial; scattering audit(...) calls across ~30 route handlers
+// would mean forgetting it in exactly the handler nobody re-reads.
+function auditDeny(db, ctx, { action, targetType = null, targetId = null, reasonCode }) {
+  audit(db, {
+    orgId: ctx.orgId,
+    actorId: ctx.userId,
+    action,
+    targetType,
+    targetId,
+    result: 'deny',
+    reasonCode,
+    requestId: ctx.requestId ?? null,
+  });
+}
 
 export const MODE_PERMISSION = { view: 'device:view', control: 'device:control', terminal: 'device:terminal' };
 
@@ -147,6 +166,7 @@ export function assertCan(db, ctx, permission, deviceId = null) {
   const decision = resolve(db, { userId: ctx.userId, orgId: ctx.orgId, deviceId }).permissions[permission];
   if (decision.effect !== 'allow') {
     const reason = decision.reason === 'explicit_deny' ? 'explicit_deny' : 'missing_permission';
+    auditDeny(db, ctx, { action: permission.replace(':', '.'), targetType: deviceId ? 'device' : null, targetId: deviceId, reasonCode: reason });
     throw forbidden(`missing ${permission}`, reason);
   }
   return decision;
@@ -167,6 +187,7 @@ export function assertMayGrant(db, ctx, patterns, deviceId = null) {
 
     for (const key of keys) {
       if (held[key]?.effect !== 'allow') {
+        auditDeny(db, ctx, { action: 'grant.create', targetType: 'grant', reasonCode: 'missing_permission' });
         throw forbidden(`cannot grant ${pattern}: you do not hold ${key} at this scope`, 'missing_permission');
       }
     }
@@ -180,9 +201,11 @@ export function assertCanStartSession(db, ctx, mode, deviceId) {
   const { permissions } = resolve(db, { userId: ctx.userId, orgId: ctx.orgId, deviceId });
 
   if (permissions['session:start'].effect !== 'allow') {
+    auditDeny(db, ctx, { action: 'session.start', targetType: 'device', targetId: deviceId, reasonCode: 'missing_permission' });
     throw forbidden('missing session:start', 'missing_permission');
   }
   if (permissions[modePermission].effect !== 'allow') {
+    auditDeny(db, ctx, { action: 'session.start', targetType: 'device', targetId: deviceId, reasonCode: 'missing_device_permission' });
     throw forbidden(`missing ${modePermission}`, 'missing_device_permission');
   }
 }
