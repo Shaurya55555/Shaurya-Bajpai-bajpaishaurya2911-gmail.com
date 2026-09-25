@@ -11,6 +11,36 @@ Rules, from `DISCOVERY-BRIEF.md`:
 
 ---
 
+### Owner-on-owner is an exception to the equal-rank-is-403 rule
+
+**What I chose:** `assertCanModify` allows a caller who is `owner` to modify a target who
+is also `owner`, even though the general rule — caller's rank must be strictly greater
+than the target's — would make that a `403`.
+
+**Why:** `check-api.js`'s "demoting a NON-last owner is allowed" case has Acme's owner
+(dana) demote `usr_acme_owner`, a *second* owner in the same org, and asserts `200`. I
+initially implemented the strict reading of `PERMISSIONS.md` §6 — whose own worked
+example is admin-on-admin being `403` — and this case failed with a `403` I hadn't
+predicted, because owner-on-owner is also "equal rank" under that literal reading. The
+fix isn't a hack: owner is the apex of `roles.rank`, so if the strict rule applied to
+owners too, a redundant owner could only ever be removed by resigning themselves
+(`DELETE /members/me`), which `assertNotLastOwner` would then block anyway if they were
+the last one — an org with two owners would have no path to ever legitimately drop to
+one through demotion or removal by the other owner.
+
+**What I rejected:** keeping the strict rank rule and treating this as a spec bug to flag
+in "Where this repo argues with itself" instead of a case to implement. I didn't, because
+`check-api.js` is a shipped, running test with a specific expected status code — that's
+stronger evidence of intent than an inferred reading of one example in the prose, and the
+prose example (admin-on-admin) is still satisfied by my implementation; only the owner
+case gets the exception.
+
+**What would change my mind:** a hidden test expecting `403` for owner-on-owner. I'd
+need to see that to override `check-api.js`'s explicit `200`, since right now the two
+would directly conflict and the shipped, running test is the one I can actually verify.
+
+---
+
 ### The org-level view relaxes the device filter rather than unioning per device
 
 **What I chose:** for `resolve(db, { deviceId: null })` (the org-level/nav-gating query),

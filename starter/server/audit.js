@@ -13,17 +13,38 @@
 // Schema columns: id, org_id (NOT NULL), actor_id, action, target_type, target_id,
 // result ('allow'|'deny'), reason_code, request_id, at.
 
-const todo = (name) =>
-  Object.assign(
-    new Error(`TODO: server/audit.js — ${name}() is yours to write (BRIEF.md §3).`),
-    { code: 'NOT_IMPLEMENTED' }
-  );
+import { newId } from './db.js';
+import { HttpError } from './http.js';
 
-export function audit(db, { orgId, actorId, action, targetType, targetId, result, reasonCode, requestId }) {
-  throw todo('audit');
+export function audit(
+  db,
+  { orgId, actorId = null, action, targetType = null, targetId = null, result, reasonCode = null, requestId = null }
+) {
+  db.prepare(
+    `INSERT INTO audit_events (id, org_id, actor_id, action, target_type, target_id, result, reason_code, request_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).run(newId('aud'), orgId, actorId, action, targetType, targetId, result, reasonCode, requestId);
 }
 
-// Run fn(); if it refuses with a permission error, record the denial before rethrowing.
+// Run fn(); if it refuses with a 403, record the denial before rethrowing. Successes are
+// NOT audited here — the caller writes the success row itself, in the same transaction
+// as the change it describes, so one action produces exactly one row.
 export function auditDenials(db, ctx, meta, fn) {
-  throw todo('auditDenials');
+  try {
+    return fn();
+  } catch (err) {
+    if (err instanceof HttpError && err.status === 403) {
+      audit(db, {
+        orgId: ctx.orgId,
+        actorId: ctx.userId,
+        action: meta.action,
+        targetType: meta.targetType ?? null,
+        targetId: meta.targetId ?? null,
+        result: 'deny',
+        reasonCode: err.reason ?? null,
+        requestId: ctx.requestId ?? null,
+      });
+    }
+    throw err;
+  }
 }

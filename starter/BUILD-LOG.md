@@ -93,6 +93,42 @@ _Where did the server's answer and your instinct disagree about what should be o
 _What did you measure, what did you fix, and what did you deliberately leave alone? Anything you
 chose not to build belongs here with its reason._
 
+## 2026-09-26 · Phase 3/4 — routes: orgs, members, invites, devices, grants, sessions, audit
+
+Expected `assertCanModify` (strictly-lower-rank-only) to be right because it's the literal
+reading of `PERMISSIONS.md` §6's example (admin->admin is 403). Observed: `check-api.js`'s
+"demoting a NON-last owner is allowed" case has an *owner* demoting *another owner* and
+expects `200`, which my strict rank comparison rejected as equal-rank. Changed: owner-on-
+owner is now an explicit exception in `assertCanModify` — owner is the apex rank, so if
+two owners exist, no *higher* rank exists to arbitrate between them, and blocking it would
+make a redundant owner un-demotable except by resigning themselves; `assertNotLastOwner`
+already guards the actual danger (dropping to zero owners). Logged the reasoning in
+`DECISIONS.md` since this reads as a real disagreement with the section's own stated
+example, not just an implementation detail.
+
+Two bugs `check-api.js` caught directly, not by inspection:
+1. `DEVICE_BUSY` mapping matched on the unique index's *name*
+   (`one_exclusive_session_per_device`) in the SQLite error message, but better-sqlite3's
+   actual message is `UNIQUE constraint failed: sessions.device_id` — no index name in it
+   at all. First concurrent-session test failed with a raw `500 INTERNAL` instead of `409
+   DEVICE_BUSY` until I matched on the table.column string instead.
+2. The audit pagination test calls `?limit=200` expecting `200 OK` in the "audit records
+   denied attempts" block, then separately tests `?limit=99999 -> 400` in the boundary
+   block. I'd set the cap at 100, which passed the boundary test but failed the earlier
+   one at 200. Moved the cap to 500 — comfortably between the two.
+
+Also hit a real environment bug, unrelated to my code: `scripts/load-db.js`'s `here()`
+helper builds a file path with `new URL(p, import.meta.url).pathname`, which on Windows
+produces `/D:/Projects/...` (a leading slash before the drive letter). Passing that
+string to `readFileSync` resolved to a doubled `D:\D:\Projects\...` path and failed with
+ENOENT. `check-permissions.js` and `check-personalisation.js` never hit this because they
+pass the `URL` object itself to `readFileSync`, which Node resolves correctly cross-
+platform — so I changed `here()` to return the `URL` instead of extracting `.pathname`.
+This doesn't touch `db/schema.sql`/`db/reference.sql` (still load-bearing, unmodified) —
+just a path-handling bug in the loader script, which is tooling, not the exercise.
+
+`check-api.js`: 66/66 after both fixes.
+
 ## Open threads
 
 _Things you know are wrong, unfinished, or that you would do differently with another day. Listing

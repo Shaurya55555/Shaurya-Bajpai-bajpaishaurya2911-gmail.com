@@ -7,7 +7,13 @@ import { hashPassword } from '../server/auth.js';
 import { readNonce, buildOverlay, applyOverlay, describeOverlay } from './personalise.js';
 
 const DB_FILE = process.env.DATABASE_FILE ?? 'app.db';
-const here = (p) => new URL(p, import.meta.url).pathname;
+// A URL object, not its .pathname string: readFileSync accepts file:// URLs directly
+// and resolves them correctly cross-platform. .pathname on a Windows file:// URL is
+// '/D:/...' (a leading slash before the drive letter), which readFileSync on Windows
+// resolves relative to the current drive, producing a doubled 'D:\D:\...' path — this
+// is what check-permissions.js and check-personalisation.js do instead, and it's why
+// they didn't hit this.
+const here = (p) => new URL(p, import.meta.url);
 
 for (const suffix of ['', '-wal', '-shm']) {
   if (existsSync(DB_FILE + suffix)) rmSync(DB_FILE + suffix);
