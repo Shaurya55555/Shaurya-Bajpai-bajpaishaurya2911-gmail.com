@@ -287,6 +287,32 @@ that raced each other.
 Both previously-open UI threads are now closed with real evidence, not just "should work
 by inspection."
 
+## 2026-09-26 · Phase 7 (cont.) — load-testing past the fixture scale
+
+The seed fixture only has 5-9 devices per org, which isn't enough to actually see whether
+`resolveDevices` is O(1)-queries or secretly O(n). Wrote a throwaway script (not
+committed, same reasoning as the manual UI check) that creates a fresh org and scales it
+up: 10, 50, 100, 250 devices, scattering a device-scoped grant for roughly 1 in 10, then
+timed `GET /orgs/:org/devices` five times at each scale (min/median/max, to filter
+first-request noise):
+
+| Devices | min | median | max |
+|---|---|---|---|
+| 10 | 6.3ms | 7.5ms | 10.7ms |
+| 50 | 6.5ms | 14.6ms | 18.7ms |
+| 100 | 33.5ms | 48.0ms | 48.6ms |
+| 250 | 18.6ms | 48.0ms | 97.1ms |
+
+25x more devices (10 → 250) produced roughly a 6x increase in median latency, not 25x.
+That's the actual signature I was looking for: if `resolveDevices` issued one query per
+device instead of the fixed ~3 queries it actually runs (membership, role baseline, and
+one grants query covering every device at once), 25x more devices would mean roughly 25x
+more round trips, not 6x. The residual growth that *does* show up is the in-memory
+filtering cost — for every device, every one of the ~20 catalogue permissions gets
+matched against however many grant rows exist — which is expected and, at these numbers,
+still comfortably under the "well within a second" bar from `BRIEF.md` §6, even at 250
+devices. Closes the "performance only measured at fixture scale" open thread below.
+
 ## Open threads
 
 _Things you know are wrong, unfinished, or that you would do differently with another day. Listing
@@ -304,9 +330,8 @@ these honestly is worth more than pretending they do not exist — we will find 
   and **the invite role-assignment rank question** (also in `DECISIONS.md`) are both
   reasoned positions, not verified ones — I'd want to see the actual hidden-tier behavior
   before calling either settled.
-- **Performance was measured only at seed-fixture scale** (5-9 devices, ~8 users) — see
-  the Phase 7 entry above. I have not created a larger synthetic org to confirm the
-  batched-query design holds up as counts grow, only argued that it should structurally.
+- ~~Performance was measured only at seed-fixture scale~~ — closed above (Phase 7,
+  "load-testing past the fixture scale"): 10 → 250 devices, 25x scale for ~6x latency.
 - **The repo itself still contains organizer-only material** (`q1-starter/`, `tools/`,
   `DISCOVERY-RUBRIC.md`, `HARDENING.md`) that leaked through the public fork target. This
   has been flagged to the organizers by email; nothing has been removed pending their
