@@ -313,6 +313,49 @@ matched against however many grant rows exist — which is expected and, at thes
 still comfortably under the "well within a second" bar from `BRIEF.md` §6, even at 250
 devices. Closes the "performance only measured at fixture scale" open thread below.
 
+## 2026-09-26 · Phase 8 — rigorous adversarial testing
+
+Went looking specifically for concurrency bugs beyond D10 (already proven), since that's
+the class of bug a sequential test suite structurally cannot catch. Fired two genuinely
+concurrent (`Promise.all`, no `await` between them) `POST /invites/:token/accept` calls
+against the same token.
+
+**Expected** it to either work by luck or reveal a real double-accept bug, since
+`server/routes/invites.js`'s final `UPDATE invites SET accepted_at = ... WHERE id = ?`
+had no `accepted_at IS NULL` guard — a plain check-then-act, the exact pattern
+`PERMISSIONS.md` warns against elsewhere. **Observed**: it did not fail — exactly one
+`200`, one `409`, one membership row. Traced why before declaring it safe: `better-
+sqlite3` is fully synchronous and Node is single-threaded, and nothing in the handler
+`await`s any I/O between the read and the write, so the entire accept flow runs as one
+uninterruptible block per request — there is no window for two requests to interleave
+inside it, even without an explicit guard.
+
+That's real, but it's *incidental* safety — it depends on nobody ever adding an `await`
+inside that handler (a slower password hash, an email-verification call, anything
+async), not on a schema-level guarantee the way session exclusivity (D10) has one.
+**Changed** the final `UPDATE` to `... WHERE id = ? AND accepted_at IS NULL` and check
+`result.changes === 0` before returning success — the same "let the database refuse it"
+philosophy already applied to sessions, made structural here too instead of leaning on an
+implementation detail of the current runtime. Re-ran the concurrent-accept test after the
+change: identical result, `200`/`409`, now for a reason that would hold even if the
+handler became asynchronous later. `check-api.js`: still 66/66.
+
+Also checked, no bugs found in any:
+- **Last-owner protection via full removal**, not just demote/self-leave: `DELETE
+  /orgs/:org/members/:userId` on a sole owner → `409 LAST_OWNER`, correctly covering the
+  third of the three paths that could zero out an org's owners.
+- **Double-revoke**: revoking an already-revoked grant → `404`, matching
+  `AUTH-DATA-MODEL.md` §8 ("no longer visible") exactly.
+- **Email normalization**: an invite created with `"  MixedCase@Example.TEST  "` is
+  stored as `mixedcase@example.test`; the resulting account logs in fine with yet another
+  casing (`MIXEDCASE@example.test`).
+- **SQL-injection-shaped input**: created an org named literally
+  `Robert"); DROP TABLE organizations; --` — stored and returned verbatim as a string,
+  table intact, `GET /orgs` unaffected. Parameterized queries throughout hold up under an
+  actual attempt, not just by not having written a `string + concatenation` anywhere.
+- **Duplicate pending invite** for the same email while one is already outstanding →
+  `409 CONFLICT`, as `AUTH-DATA-MODEL.md` §6 requires.
+
 ## Open threads
 
 _Things you know are wrong, unfinished, or that you would do differently with another day. Listing

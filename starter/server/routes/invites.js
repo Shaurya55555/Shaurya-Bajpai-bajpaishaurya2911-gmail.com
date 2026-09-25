@@ -127,7 +127,17 @@ export function registerInviteRoutes(router, { db }) {
       ).run(newId('mem'), invite.org_id, user.id, invite.role, now);
     }
 
-    db.prepare(`UPDATE invites SET accepted_at = ?, accepted_by = ? WHERE id = ?`).run(now, user.id, invite.id);
+    // Atomic compare-and-set, not just the early check above: the earlier `if
+    // (invite.accepted_at)` only protects against a request that arrives after another
+    // has *finished*. Two racing requests both pass that check reading the same
+    // pre-accept row; only one of these guarded UPDATEs can actually flip a NULL
+    // accepted_at, so `changes === 0` here is the real, structural "someone else won"
+    // signal — the database refuses it, the same philosophy already used for session
+    // exclusivity (D10), rather than trusting request ordering.
+    const result = db
+      .prepare(`UPDATE invites SET accepted_at = ?, accepted_by = ? WHERE id = ? AND accepted_at IS NULL`)
+      .run(now, user.id, invite.id);
+    if (result.changes === 0) throw conflict('invite already accepted');
     audit(db, { orgId: invite.org_id, actorId: user.id, action: 'invite.accept', targetType: 'invite', targetId: invite.id, result: 'allow' });
 
     send(res, 200, { role: invite.role });

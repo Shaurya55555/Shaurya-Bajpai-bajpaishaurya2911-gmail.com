@@ -11,6 +11,36 @@ Rules, from `DISCOVERY-BRIEF.md`:
 
 ---
 
+### Invite acceptance is guarded by an atomic compare-and-set, not the earlier read check alone
+
+**What I chose:** the final step of `POST /invites/:token/accept` is
+`UPDATE invites SET accepted_at = ... WHERE id = ? AND accepted_at IS NULL`, checked via
+`result.changes === 0` to detect a lost race, in addition to (not instead of) the earlier
+`if (invite.accepted_at) throw conflict(...)` read at the top of the handler.
+
+**Why:** fired two genuinely concurrent (`Promise.all`) accept requests at the same
+token against the *original* code, which had no `IS NULL` guard on that `UPDATE` — a
+plain check-then-act. It didn't fail: exactly one `200`, one `409`. I traced why instead
+of trusting the green result: `better-sqlite3` is synchronous and nothing in the handler
+`await`s any I/O, so Node's single-threaded event loop can't interleave the two requests
+inside the handler body regardless. That's real protection today, but it's a property of
+the current runtime, not of the code's own logic — unlike session exclusivity (D10),
+which the database itself enforces via a unique index and would hold even if the server
+were rewritten in something with real thread-level concurrency.
+
+**What I rejected:** leaving the original check-then-act as-is, on the grounds that the
+concurrent test already passed. I didn't, because "passed once, for a reason I can
+articulate but that depends on an implementation detail" is a materially weaker
+guarantee than "the database physically cannot let this happen twice" — and the second
+kind is exactly what this whole project's own stated design principle asks for
+(`PERMISSIONS.md`: "let the database refuse it instead of checking first in code").
+
+**What would change my mind:** nothing, really — this one has a strictly-better
+alternative available at near-zero cost, so there's no case for keeping the weaker
+version once the stronger one is this cheap.
+
+---
+
 ### Deny-audit logging lives inside the three `assert*` functions, not in the routes
 
 **What I chose:** `assertCan`, `assertMayGrant`, and `assertCanStartSession` in
