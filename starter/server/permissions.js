@@ -172,10 +172,51 @@ export function assertCan(db, ctx, permission, deviceId = null) {
   return decision;
 }
 
+// The authority check behind assertMayGrant. Deliberately NOT resolve(): resolve()'s
+// deviceId === null path is a display view that folds in device-scoped grants (any
+// single device's allow counts for the org-level picture, PERMISSIONS.md §3). Reusing
+// that here would mean a grant scoped to one device satisfies the check for creating an
+// ORG-WIDE grant for someone else — a device-scoped allow laundered into org-wide
+// authority. So when deviceId is null we require true org-wide authority: role baseline
+// or a grant with device_id IS NULL, never a single device's grant. A device-scoped
+// request (deviceId set) still accepts org-wide-or-this-device authority, same as
+// resolve(), since that direction isn't a scope widening.
+function resolveGrantAuthority(db, { userId, orgId, deviceId }) {
+  const catalogue = loadCatalogue(db);
+  const membership = loadMembership(db, orgId, userId);
+
+  const emptyReason = emptyReasonFor(membership);
+  if (emptyReason) return emptySet(catalogue, null, emptyReason, membership?.role ?? null).permissions;
+
+  const roleBaseline = loadRoleBaseline(db, membership.role);
+  const nowIso = new Date().toISOString();
+
+  const rows = db
+    .prepare(
+      `SELECT gp.permission AS pattern, g.effect, g.device_id AS deviceId, g.id AS grantId
+       FROM grants g
+       JOIN grant_permissions gp ON gp.grant_id = g.id
+       WHERE g.org_id = ? AND g.user_id = ? AND g.revoked_at IS NULL
+         AND (g.starts_at IS NULL OR g.starts_at <= ?)
+         AND (g.expires_at IS NULL OR g.expires_at > ?)
+         AND (g.device_id IS NULL OR g.device_id = ?)`
+    )
+    .all(orgId, userId, nowIso, nowIso, deviceId);
+
+  const permissions = {};
+  for (const perm of catalogue) {
+    const matching = rows
+      .filter((r) => r.pattern === perm.key || r.pattern === `${perm.resource}:*` || r.pattern === '*')
+      .map((r) => ({ ...r, permKey: perm.key }));
+    permissions[perm.key] = decide(matching, perm.key, roleBaseline, membership.role);
+  }
+  return permissions;
+}
+
 // No privilege laundering: you may only grant authority you hold at that scope.
 export function assertMayGrant(db, ctx, patterns, deviceId = null) {
   const catalogue = loadCatalogue(db);
-  const { permissions: held } = resolve(db, { userId: ctx.userId, orgId: ctx.orgId, deviceId });
+  const held = resolveGrantAuthority(db, { userId: ctx.userId, orgId: ctx.orgId, deviceId });
 
   for (const pattern of patterns) {
     const keys =

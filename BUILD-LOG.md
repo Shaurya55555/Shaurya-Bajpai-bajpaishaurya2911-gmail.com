@@ -356,6 +356,45 @@ Also checked, no bugs found in any:
 - **Duplicate pending invite** for the same email while one is already outstanding →
   `409 CONFLICT`, as `AUTH-DATA-MODEL.md` §6 requires.
 
+## 2026-09-26 · Phase 9 — a real privilege-laundering hole in `assertMayGrant`
+
+Went back to the org-level-vs-device-level judgment call already flagged as unverified
+below (and in `DECISIONS.md`) and asked a sharper question: `assertMayGrant` calls
+`resolve(db, { deviceId })` with whatever `deviceId` the *request* names, to check
+whether the caller already holds the permission they're trying to hand out. `resolve()`'s
+`deviceId === null` path is intentionally a display view — its SQL filter
+(`? IS NULL OR g.device_id IS NULL OR g.device_id = ?`) folds in every device-scoped
+grant when no device is named, because "does this permission show up anywhere for this
+user in this org" is the right question for a nav/summary view.
+
+**Expected** that to be harmless for grant authorization too. **Observed** it is not: a
+caller with `device:control` allowed on exactly one device (no role baseline, no
+org-wide grant) resolves to `allow` at `deviceId: null` — and `assertMayGrant(..., null)`
+uses exactly that result to authorize creating a **new org-wide** `device:control` grant
+for someone else. Proved it directly: seeded a viewer (baseline denies `device:control`)
+with a single device-scoped allow grant, confirmed `resolve({deviceId: null})` returned
+`allow` while `resolve({deviceId: <a different device>})` correctly returned `deny`, then
+called `assertMayGrant(ctx, ['device:control'], null)` and watched it succeed. That's a
+device-scoped allow laundered into an org-wide grant for a third party — the exact class
+of escalation the function's own comment says it prevents.
+
+**Changed**: `assertMayGrant` no longer calls `resolve()`. It has its own
+`resolveGrantAuthority()` with a stricter filter — `g.device_id IS NULL OR g.device_id =
+?` with no `? IS NULL` bypass — so when the request asks for an org-wide grant
+(`deviceId: null` supplied as the bind parameter), only true org-wide authority (role
+baseline or an org-wide grant) counts; a single device's grant no longer matches. A
+device-scoped grant request still correctly accepts org-wide-or-this-device authority,
+same as before, since that direction isn't a scope widening. `resolve()` itself is
+untouched — its display semantics are correct for what it's used for elsewhere (the
+effective-permissions endpoint, the UI). Verified: the laundering attempt now throws
+`missing_permission`; an admin (genuine org-wide authority) can still create both an
+org-wide grant and a device-scoped one. Full suite re-run clean after the change:
+187/187 (43 JWT + 35 permissions + 66 API + 18 personalisation + 25 Playwright).
+
+No test in `check-permissions.js` exercised this path before — it only covered the
+reverse direction (device-scoped ALLOW vs. org-wide DENY). Worth adding a regression
+case for the scenario above if there's time before submission.
+
 ## Open threads
 
 _Things you know are wrong, unfinished, or that you would do differently with another day. Listing
@@ -369,10 +408,14 @@ these honestly is worth more than pretending they do not exist — we will find 
   scratchpad — the manual script that drove this wasn't committed.
 - ~~The exclusive-session race (D10) has only been proven via sequential requests~~ —
   closed, see the Phase 6 concurrency entry below.
-- **The org-level vs. device-level resolution judgment call** (argued in `DECISIONS.md`)
-  and **the invite role-assignment rank question** (also in `DECISIONS.md`) are both
-  reasoned positions, not verified ones — I'd want to see the actual hidden-tier behavior
-  before calling either settled.
+- ~~The org-level vs. device-level resolution judgment call was a reasoned position, not
+  a verified one~~ — partially closed, and the verification found a real bug: see Phase
+  9 above. The display-view semantics themselves are still a judgment call I'd want
+  hidden-tier feedback on; what's no longer open is whether they're safe to reuse for
+  authorization, since `assertMayGrant` reusing them wasn't.
+- **The invite role-assignment rank question** (argued in `DECISIONS.md`) is still a
+  reasoned position, not a verified one — I'd want to see the actual hidden-tier
+  behavior before calling it settled.
 - ~~Performance was measured only at seed-fixture scale~~ — closed above (Phase 7,
   "load-testing past the fixture scale"): 10 → 250 devices, 25x scale for ~6x latency.
 - **The repo itself still contains organizer-only material** (`q1-starter/`, `tools/`,
